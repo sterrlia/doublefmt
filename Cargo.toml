@@ -2,6 +2,7 @@
 name = "doublefmt"
 version = "0.1.0"
 edition = "2024"
+license-file = "LICENSE"
 rust-version = "1.85.1"
 
 [lib]
