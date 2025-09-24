@@ -1,31 +1,32 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
-    Expr, Ident, Token,
+    Expr, ExprLit, ExprMacro, Ident, Lit, LitStr, Token,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
+    spanned::Spanned,
 };
 
-struct MacroInput {
+struct FormatStrMacroInput {
     template: Expr,
-    args: Punctuated<Arg, Token![,]>,
+    args: Punctuated<FormatStrArg, Token![,]>,
 }
 
-struct Arg {
+struct FormatStrArg {
     name: Ident,
     value: Expr,
 }
 
-impl Parse for Arg {
+impl Parse for FormatStrArg {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let name: Ident = input.parse()?;
         input.parse::<Token![=]>()?;
         let value: Expr = input.parse()?;
-        Ok(Arg { name, value })
+        Ok(FormatStrArg { name, value })
     }
 }
 
-impl Parse for MacroInput {
+impl Parse for FormatStrMacroInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let template: Expr = input.parse()?;
         let mut args = Punctuated::new();
@@ -33,52 +34,198 @@ impl Parse for MacroInput {
             input.parse::<Token![,]>()?;
             args = Punctuated::parse_terminated(input)?;
         }
-        Ok(MacroInput { template, args })
+        Ok(FormatStrMacroInput { template, args })
     }
 }
 
 #[proc_macro]
-pub fn doublefmt(input: TokenStream) -> TokenStream {
-    let MacroInput { template, args } = syn::parse_macro_input!(input as MacroInput);
+pub fn format_str(input: TokenStream) -> TokenStream {
+    let FormatStrMacroInput { template, args } =
+        syn::parse_macro_input!(input as FormatStrMacroInput);
 
-    // store arguments into a map at runtime
-    let mut keys = Vec::new();
-    let mut values = Vec::new();
-    for arg in args {
-        keys.push(arg.name.to_string());
-        values.push(arg.value);
+    // Extract literal string from template if possible
+    let tpl_str: Option<String> = match &template {
+        Expr::Lit(ExprLit {
+            lit: Lit::Str(lit), ..
+        }) => Some(lit.value()),
+        _ => None,
+    };
+
+    let raw = match tpl_str {
+        Some(s) => s,
+        None => {
+            return syn::Error::new(template.span(), "template must be a string literal")
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    // Collect arguments
+    let mut arg_map = std::collections::HashMap::new();
+    for arg in &args {
+        let name = arg.name.to_string();
+        if arg_map.contains_key(&name) {
+            return syn::Error::new(arg.name.span(), format!("duplicate argument: {}", name))
+                .to_compile_error()
+                .into();
+        }
+        arg_map.insert(name, &arg.value);
+    }
+
+    // Parse template for {{ placeholders }}
+    let mut parts = Vec::new();
+    let mut buf = String::new();
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '{' && chars.peek() == Some(&'{') {
+            chars.next(); // consume second '{'
+            if !buf.is_empty() {
+                parts.push(quote! { s.push_str(#buf); });
+                buf.clear();
+            }
+            let mut ident = String::new();
+            while let Some(ch) = chars.next() {
+                if ch == '}' && chars.peek() == Some(&'}') {
+                    chars.next();
+                    break;
+                } else {
+                    ident.push(ch);
+                }
+            }
+            let ident = ident.trim();
+            if let Some(expr) = arg_map.get(ident) {
+                parts.push(
+                    quote! { use std::fmt::Write as _; write!(&mut s, "{}", #expr).unwrap(); },
+                );
+            } else {
+                return syn::Error::new(template.span(), format!("unknown placeholder: {}", ident))
+                    .to_compile_error()
+                    .into();
+            }
+        } else {
+            buf.push(c);
+        }
+    }
+    if !buf.is_empty() {
+        parts.push(quote! { s.push_str(#buf); });
     }
 
     let expanded = quote! {{
-        let tpl: &str = #template;
         let mut s = String::new();
-        let mut i = 0;
-        while let Some(start) = tpl[i..].find("{{") {
-            let start = i + start;
-            if let Some(end) = tpl[start + 2..].find("}}") {
-                let end = start + 2 + end;
-                // push literal text
-                s.push_str(&tpl[i..start]);
-                // extract placeholder name
-                let name = tpl[start + 2..end].trim();
-                match name {
-                    #(
-                        #keys => {
-                            use std::fmt::Write as _;
-                            write!(&mut s, "{}", #values).unwrap();
-                        }
-                    )*
-                    _ => panic!("unknown placeholder: {}", name),
-                }
-                i = end + 2;
-            } else {
-                // no closing "}}"
-                s.push_str(&tpl[start..]);
-                break;
-            }
-        }
-        s.push_str(&tpl[i..]);
+        #(#parts)*
         s
     }};
     expanded.into()
 }
+
+struct FormatFileMacroInput {
+    path: LitStr,
+    args: Punctuated<FormatFileArg, Token![,]>,
+}
+
+struct FormatFileArg {
+    name: Ident,
+    value: Expr,
+}
+
+impl Parse for FormatFileArg {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let name: Ident = input.parse()?;
+        input.parse::<Token![=]>()?;
+        let value: Expr = input.parse()?;
+        Ok(FormatFileArg { name, value })
+    }
+}
+
+impl Parse for FormatFileMacroInput {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let path: LitStr = input.parse()?;
+        let mut args = Punctuated::new();
+        if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+            args = Punctuated::parse_terminated(input)?;
+        }
+        Ok(FormatFileMacroInput { path, args })
+    }
+}
+
+#[proc_macro]
+pub fn format_file(input: TokenStream) -> TokenStream {
+    let FormatFileMacroInput { path, args } =
+        syn::parse_macro_input!(input as FormatFileMacroInput);
+
+    // Resolve the file path relative to project root
+    let rel_path = path.value();
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let full_path = std::path::Path::new(&manifest_dir).join(&rel_path);
+
+    let content = match std::fs::read_to_string(&full_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return syn::Error::new(path.span(), e.to_string())
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    // Collect named arguments
+    let mut arg_map = std::collections::HashMap::new();
+    for arg in &args {
+        let name = arg.name.to_string();
+        if arg_map.contains_key(&name) {
+            return syn::Error::new(arg.name.span(), format!("duplicate argument: {}", name))
+                .to_compile_error()
+                .into();
+        }
+        arg_map.insert(name, &arg.value);
+    }
+
+    // Parse template for {{ placeholders }}
+    let mut parts = Vec::new();
+    let mut buf = String::new();
+    let mut chars = content.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '{' && chars.peek() == Some(&'{') {
+            chars.next(); // consume second '{'
+            if !buf.is_empty() {
+                parts.push(quote! { s.push_str(#buf); });
+                buf.clear();
+            }
+            let mut ident = String::new();
+            while let Some(ch) = chars.next() {
+                if ch == '}' && chars.peek() == Some(&'}') {
+                    chars.next();
+                    break;
+                } else {
+                    ident.push(ch);
+                }
+            }
+            let ident = ident.trim();
+            if let Some(expr) = arg_map.get(ident) {
+                parts.push(
+                    quote! { use std::fmt::Write as _; write!(&mut s, "{}", #expr).unwrap(); },
+                );
+            } else {
+                return syn::Error::new(path.span(), format!("unknown placeholder: {}", ident))
+                    .to_compile_error()
+                    .into();
+            }
+        } else {
+            buf.push(c);
+        }
+    }
+
+    if !buf.is_empty() {
+        parts.push(quote! { s.push_str(#buf); });
+    }
+
+    let expanded = quote! {{
+        let mut s = String::new();
+        #(#parts)*
+        s
+    }};
+
+    expanded.into()
+}
+
