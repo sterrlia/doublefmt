@@ -2,6 +2,7 @@
 name = "doublefmt"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85.1"
 
 [lib]
 proc-macro = true
@@ -10,4 +11,3 @@ proc-macro = true
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
-
