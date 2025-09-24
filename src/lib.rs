@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
-    Expr, ExprLit, ExprMacro, Ident, Lit, LitStr, Token,
+    Expr, ExprLit, Ident, Lit, LitStr, Token,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
     spanned::Spanned,
@@ -228,4 +228,3 @@ pub fn format_file(input: TokenStream) -> TokenStream {
 
     expanded.into()
 }
-
