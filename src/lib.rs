@@ -1,13 +1,13 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
+    Expr, Ident, Token,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
-    Expr, Ident, LitStr, Token,
 };
 
 struct MacroInput {
-    template: LitStr,
+    template: Expr,
     args: Punctuated<Arg, Token![,]>,
 }
 
@@ -27,7 +27,7 @@ impl Parse for Arg {
 
 impl Parse for MacroInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let template: LitStr = input.parse()?;
+        let template: Expr = input.parse()?;
         let mut args = Punctuated::new();
         if input.peek(Token![,]) {
             input.parse::<Token![,]>()?;
@@ -41,55 +41,43 @@ impl Parse for MacroInput {
 pub fn doublefmt(input: TokenStream) -> TokenStream {
     let MacroInput { template, args } = syn::parse_macro_input!(input as MacroInput);
 
-    // collect named args into a map
-    let mut arg_map = std::collections::HashMap::new();
+    // store arguments into a map at runtime
+    let mut keys = Vec::new();
+    let mut values = Vec::new();
     for arg in args {
-        arg_map.insert(arg.name.to_string(), arg.value);
-    }
-
-    let raw = template.value();
-    let mut parts = Vec::new();
-    let mut buf = String::new();
-    let mut chars = raw.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c == '{' && chars.peek() == Some(&'{') {
-            chars.next();
-            if !buf.is_empty() {
-                parts.push(quote! { s.push_str(#buf); });
-                buf.clear();
-            }
-            let mut ident = String::new();
-            while let Some(ch) = chars.next() {
-                if ch == '}' && chars.peek() == Some(&'}') {
-                    chars.next();
-                    break;
-                } else {
-                    ident.push(ch);
-                }
-            }
-            let ident = ident.trim();
-            if let Some(expr) = arg_map.get(ident) {
-                parts.push(
-                    quote! { use std::fmt::Write as _; write!(&mut s, "{}", #expr).unwrap(); },
-                );
-            } else {
-                let msg = format!("unknown placeholder: {}", ident);
-                return syn::Error::new(template.span(), msg)
-                    .to_compile_error()
-                    .into();
-            }
-        } else {
-            buf.push(c);
-        }
-    }
-    if !buf.is_empty() {
-        parts.push(quote! { s.push_str(#buf); });
+        keys.push(arg.name.to_string());
+        values.push(arg.value);
     }
 
     let expanded = quote! {{
+        let tpl: &str = #template;
         let mut s = String::new();
-        #(#parts)*
+        let mut i = 0;
+        while let Some(start) = tpl[i..].find("{{") {
+            let start = i + start;
+            if let Some(end) = tpl[start + 2..].find("}}") {
+                let end = start + 2 + end;
+                // push literal text
+                s.push_str(&tpl[i..start]);
+                // extract placeholder name
+                let name = tpl[start + 2..end].trim();
+                match name {
+                    #(
+                        #keys => {
+                            use std::fmt::Write as _;
+                            write!(&mut s, "{}", #values).unwrap();
+                        }
+                    )*
+                    _ => panic!("unknown placeholder: {}", name),
+                }
+                i = end + 2;
+            } else {
+                // no closing "}}"
+                s.push_str(&tpl[start..]);
+                break;
+            }
+        }
+        s.push_str(&tpl[i..]);
         s
     }};
     expanded.into()
