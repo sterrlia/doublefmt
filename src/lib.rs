@@ -45,7 +45,9 @@ pub fn format_str(input: TokenStream) -> TokenStream {
 
     // extract literal
     let raw = match &template {
-        Expr::Lit(ExprLit { lit: Lit::Str(lit), .. }) => lit.value(),
+        Expr::Lit(ExprLit {
+            lit: Lit::Str(lit), ..
+        }) => lit.value(),
         _ => {
             return syn::Error::new(template.span(), "template must be a string literal")
                 .to_compile_error()
@@ -54,8 +56,7 @@ pub fn format_str(input: TokenStream) -> TokenStream {
     };
 
     // collect arg expressions
-    let mut arg_exprs: std::collections::HashMap<String, &Expr> =
-        std::collections::HashMap::new();
+    let mut arg_exprs: std::collections::HashMap<String, &Expr> = std::collections::HashMap::new();
     for arg in &args {
         let name = arg.name.to_string();
         if arg_exprs.contains_key(&name) {
@@ -70,10 +71,8 @@ pub fn format_str(input: TokenStream) -> TokenStream {
     let mut arg_idents: std::collections::HashMap<String, proc_macro2::Ident> =
         std::collections::HashMap::new();
     for name in arg_exprs.keys() {
-        let ident = proc_macro2::Ident::new(
-            &format!("__arg_{}", name),
-            proc_macro2::Span::call_site(),
-        );
+        let ident =
+            proc_macro2::Ident::new(&format!("__arg_{}", name), proc_macro2::Span::call_site());
         arg_idents.insert(name.clone(), ident);
     }
 
@@ -121,9 +120,12 @@ pub fn format_str(input: TokenStream) -> TokenStream {
                         .unwrap()
                         .push(Node::Expr(local_ident.clone()));
                 } else {
-                    return syn::Error::new(template.span(), format!("unknown placeholder: {}", ident))
-                        .to_compile_error()
-                        .into();
+                    return syn::Error::new(
+                        template.span(),
+                        format!("unknown placeholder: {}", ident),
+                    )
+                    .to_compile_error()
+                    .into();
                 }
             } else if chars.peek() == Some(&'%') {
                 // {% directive %}
@@ -189,18 +191,23 @@ pub fn format_str(input: TokenStream) -> TokenStream {
                                 .into();
                         }
                     };
-                    body_stack
-                        .last_mut()
-                        .unwrap()
-                        .push(Node::If { name, ident, expr, body });
+                    body_stack.last_mut().unwrap().push(Node::If {
+                        name,
+                        ident,
+                        expr,
+                        body,
+                    });
 
                     if chars.peek() == Some(&'\n') {
                         chars.next();
                     }
                 } else {
-                    return syn::Error::new(template.span(), format!("unknown directive: {}", directive))
-                        .to_compile_error()
-                        .into();
+                    return syn::Error::new(
+                        template.span(),
+                        format!("unknown directive: {}", directive),
+                    )
+                    .to_compile_error()
+                    .into();
                 }
             } else {
                 buf.push(c);
@@ -328,8 +335,7 @@ pub fn format_file(input: TokenStream) -> TokenStream {
     };
 
     // collect args
-    let mut arg_exprs: std::collections::HashMap<String, &Expr> =
-        std::collections::HashMap::new();
+    let mut arg_exprs: std::collections::HashMap<String, &Expr> = std::collections::HashMap::new();
     for arg in &args {
         let name = arg.name.to_string();
         if arg_exprs.contains_key(&name) {
@@ -344,10 +350,8 @@ pub fn format_file(input: TokenStream) -> TokenStream {
     let mut arg_idents: std::collections::HashMap<String, proc_macro2::Ident> =
         std::collections::HashMap::new();
     for name in arg_exprs.keys() {
-        let ident = proc_macro2::Ident::new(
-            &format!("__arg_{}", name),
-            proc_macro2::Span::call_site(),
-        );
+        let ident =
+            proc_macro2::Ident::new(&format!("__arg_{}", name), proc_macro2::Span::call_site());
         arg_idents.insert(name.clone(), ident);
     }
 
@@ -356,15 +360,13 @@ pub fn format_file(input: TokenStream) -> TokenStream {
         Text(String),
         Expr(proc_macro2::Ident),
         If {
-            name: String,
-            ident: proc_macro2::Ident,
-            expr: &'a Expr,
+            clauses: Vec<(String, proc_macro2::Ident, &'a Expr)>,
             body: Vec<Node<'a>>,
         },
     }
 
     let mut body_stack: Vec<Vec<Node>> = vec![Vec::new()];
-    let mut if_stack: Vec<(String, proc_macro2::Ident, &Expr)> = Vec::new();
+    let mut if_stack: Vec<Vec<(String, proc_macro2::Ident, &Expr)>> = Vec::new();
 
     let mut chars = content.chars().peekable();
     let mut buf = String::new();
@@ -414,29 +416,47 @@ pub fn format_file(input: TokenStream) -> TokenStream {
                 }
                 let directive = directive.trim();
                 if let Some(rest) = directive.strip_prefix("if ") {
-                    let tokens: Vec<&str> = rest.split_whitespace().collect();
-                    if tokens.len() == 3 && tokens[1] == "is" && tokens[2] == "Some" {
-                        let var = tokens[0];
-                        if let (Some(expr), Some(local_ident)) =
-                            (arg_exprs.get(var), arg_idents.get(var))
-                        {
-                            if_stack.push((var.to_string(), local_ident.clone(), expr));
-                            body_stack.push(Vec::new());
-                            if chars.peek() == Some(&'\n') {
-                                chars.next();
+                    // Split by "and"
+                    let clauses: Vec<&str> = rest.split(" and ").map(|s| s.trim()).collect();
+
+                    let mut clause_vars = Vec::new();
+                    let mut checks = Vec::new();
+                    for clause in clauses {
+                        let tokens: Vec<&str> = clause.split_whitespace().collect();
+                        if tokens.len() == 3 && tokens[1] == "is" && tokens[2] == "Some" {
+                            let var = tokens[0];
+                            if let (Some(expr), Some(local_ident)) =
+                                (arg_exprs.get(var), arg_idents.get(var))
+                            {
+                                clause_vars.push((var.to_string(), local_ident.clone(), *expr));
+                                checks.push(quote! { (#local_ident).is_some() });
+                            } else {
+                                return syn::Error::new(
+                                    path.span(),
+                                    format!("unknown variable in if: {}", var),
+                                )
+                                .to_compile_error()
+                                .into();
                             }
                         } else {
                             return syn::Error::new(
                                 path.span(),
-                                format!("unknown variable in if: {}", var),
+                                format!("unsupported if clause: {}", clause),
                             )
                             .to_compile_error()
                             .into();
                         }
-                    } else {
-                        return syn::Error::new(path.span(), format!("unsupported if syntax: {}", directive))
-                            .to_compile_error()
-                            .into();
+                    }
+
+                    if_stack.push(clause_vars);
+                    body_stack.push(Vec::new());
+
+                    // trim following newline
+                    if chars.peek() == Some(&'\n') {
+                        chars.next();
+                    }
+                    if chars.peek() == Some(&'\n') {
+                        chars.next();
                     }
                 } else if directive == "endif" {
                     let body = match body_stack.pop() {
@@ -447,26 +467,23 @@ pub fn format_file(input: TokenStream) -> TokenStream {
                                 .into();
                         }
                     };
-                    let (name, ident, expr) = match if_stack.pop() {
-                        Some(x) => x,
-                        None => {
-                            return syn::Error::new(path.span(), "unexpected {% endif %}")
-                                .to_compile_error()
-                                .into();
-                        }
-                    };
-                    body_stack
-                        .last_mut()
-                        .unwrap()
-                        .push(Node::If { name, ident, expr, body });
+
+                    let clauses = if_stack.pop().unwrap(); // Vec<(String, Ident, &Expr)>
+                    body_stack.last_mut().unwrap().push(Node::If { clauses, body });
 
                     if chars.peek() == Some(&'\n') {
                         chars.next();
                     }
+                    if chars.peek() == Some(&'\n') {
+                        chars.next();
+                    }
                 } else {
-                    return syn::Error::new(path.span(), format!("unknown directive: {}", directive))
-                        .to_compile_error()
-                        .into();
+                    return syn::Error::new(
+                        path.span(),
+                        format!("unknown directive: {}", directive),
+                    )
+                    .to_compile_error()
+                    .into();
                 }
             } else {
                 buf.push(c);
@@ -506,11 +523,26 @@ pub fn format_file(input: TokenStream) -> TokenStream {
                         write!(&mut s, "{}", #ident).unwrap();
                     });
                 }
-                Node::If { ident, body, .. } => {
+                Node::If { clauses, body } => {
+                    let conds: Vec<_> = clauses
+                        .iter()
+                        .map(|(_, ident, _)| {
+                            quote! { (#ident).is_some() }
+                        })
+                        .collect();
                     let inner = render_nodes(body);
+
+                    // unwrap each inside the block
+                    let unwrappers: Vec<_> = clauses
+                        .iter()
+                        .map(|(_, ident, _)| {
+                            quote! { let #ident = (#ident).unwrap(); }
+                        })
+                        .collect();
+
                     tokens.extend(quote! {
-                        if (#ident).is_some() {
-                            let #ident = (#ident).unwrap();
+                        if #(#conds)&&* {
+                            #(#unwrappers)*
                             #inner
                         }
                     });
