@@ -1,2 +1,5 @@
 Hello {{name}}!
+
+{% if count is Some %}
 You have {{count}} messages.
+{% endif %}
